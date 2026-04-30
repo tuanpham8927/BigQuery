@@ -1,23 +1,100 @@
--- version: v1.1
--- change: add Saturday filter logic
--- author: Tuan Pham
--- date: 2026-04-30
+/*
+-- Version 1.2
+-- Author: Tuan Pham
+-- Date: 04/30/2026.
+-- Add danymic param for Any day.
+-- Adjust day filter at anchor condition for n th visit.
+--    Required denominator/numerator object:
+--    same-store visit #n happened on Saturday.
+--    We use business_day, not local_weekday, because business_day is the already-normalized business-date field used by the visit spine.
+--  The version 1.1 excludes customer which has the n visit on Saturday as below sample.
+      A customer-store pair has:
+        visit #1 = Monday
+        visit #2 = Saturday
+        visit #3 = Tuesday
+      Then the pair SHOULD be included in the denominator for 2->3,
+      because visit #2 happened on Saturday.
+    The version 1.2 handle the above case.
+*/
+
+-- ============================================================
+-- Change logic filter 
+-- VISIT PAIR RETURN RATE QUERY
+-- Supports:
+--   [7]                 = Saturday only
+--   [1,2,3,4,5,6]       = Non-Saturday
+--   [1,2,3,4,5,6,7]     = All days
+--
+-- BigQuery DAYOFWEEK meaning:
+--   1 = Sunday
+--   2 = Monday
+--   3 = Tuesday
+--   4 = Wednesday
+--   5 = Thursday
+--   6 = Friday
+--   7 = Saturday
+--
+-- Business logic:
+--   1. Get all customer-store transactions for the selected store group.
+--   2. Rank each customer’s visits per store across lifetime.
+--   3. Dynamically create visit pairs: 1->2, 2->3, ... 9->10.
+--   4. For each visit pair, count:
+--        denominator = customers whose start visit #n is inside period
+--        numerator   = customers whose start visit #n and next visit #(n+1)
+--                      are both inside the same period
+--   5. Apply day filter only to the start visit date.
+--      Example:
+--        For Saturday mode, visit #n must happen on Saturday.
+--        The return visit #(n+1) can happen on any day.
+-- ============================================================
+
 WITH params AS (
   SELECT
+    -- Comparison periods
     DATE '2025-01-01' AS period_1_start,
     DATE '2025-03-31' AS period_1_end,
     DATE '2026-01-01' AS period_2_start,
     DATE '2026-03-31' AS period_2_end,
 
+    -- Visit pair range
+    -- 1 to 9 means:
+    --   1->2, 2->3, 3->4, ... 9->10
     1 AS start_visit_min,
     9 AS start_visit_max,
     10 AS max_visit_number,
 
+    -- Store scope
     'GoldenChick' AS target_store_group,
-    'all' AS target_store_id
+    'all' AS target_store_id,
+
+    -- ========================================================
+    -- DAY FILTER PARAMETER
+    -- Change this one line only.
+    --
+    -- Saturday only:
+    --   [7]
+    --
+    -- Non-Saturday:
+    --   [1,2,3,4,5,6]
+    --
+    -- All days:
+    --   [1,2,3,4,5,6,7]
+    -- ========================================================
+    [1,2,3,4,5,6,7] AS target_days
 ),
 
 /* ================= BASE TRANSACTIONS ================= */
+/*
+  Pull all transactions for the selected StoreGroup.
+
+  Important:
+    Do NOT filter to period dates here.
+
+  Why:
+    Visit rank is lifetime-based.
+    If we filtered only Q1 2025 or Q1 2026 here, visit #1, #2, #3, etc.
+    would be incorrectly recalculated inside that limited period.
+*/
 final_tx AS (
   SELECT
     b.*
@@ -30,17 +107,21 @@ final_tx AS (
     AND b.accountNumberId IS NOT NULL
 ),
 
-/* ================= LIFETIME VISIT RANK PER STORE ================= */
+/* ================= LIFETIME VISIT RANK PER CUSTOMER + STORE ================= */
 /*
-  Important:
-    This ranks visits by accountNumberId + storeId.
+  Rank visits by accountNumberId + storeId.
 
   Meaning:
-    The same customer can have:
-      - visit #1 at Store A
-      - visit #1 at Store B
+    Same customer visiting different stores has separate lifecycle ranks.
 
-    This is store-level lifecycle, not brand-level lifecycle.
+  Example:
+    Customer A at Store 1:
+      visit #1, visit #2, visit #3
+
+    Customer A at Store 2:
+      visit #1, visit #2
+
+  This keeps the query as same-store return behavior.
 */
 ranked_visits AS (
   SELECT
@@ -49,7 +130,7 @@ ranked_visits AS (
     timestamp,
     local_time,
     business_day,
-    local_weekday,
+    business_weekday,
 
     ROW_NUMBER() OVER (
       PARTITION BY accountNumberId, storeId
@@ -59,21 +140,22 @@ ranked_visits AS (
   FROM final_tx
 ),
 
-/* ================= SATURDAY-FIRST CUSTOMER-STORE COHORT ================= */
+/* ================= DYNAMIC VISIT PAIRS ================= */
 /*
-  Keep only accountNumberId + storeId combinations where
-  the first lifetime visit at that specific store was Saturday.
-*/
-first_visit_saturday_customers AS (
-  SELECT
-    accountNumberId,
-    storeId
-  FROM ranked_visits
-  WHERE visit_number = 1
-    AND local_weekday = 'Saturday'
-),
+  Creates reusable visit-pair list.
 
-/* ================= GENERIC VISIT PAIRS ================= */
+  With current params:
+    start_visit_min = 1
+    start_visit_max = 9
+    max_visit_number = 10
+
+  Output:
+    1 -> 2
+    2 -> 3
+    3 -> 4
+    ...
+    9 -> 10
+*/
 visit_pairs AS (
   SELECT
     start_visit_number,
@@ -88,6 +170,16 @@ visit_pairs AS (
 ),
 
 /* ================= BUILD CUSTOMER-STORE VISIT PAIRS ================= */
+/*
+  For each customer-store pair, find the business date of:
+    - start visit #n
+    - next visit #(n+1)
+
+  Example:
+    For 2->3:
+      start_visit_business_day = business day of visit #2
+      next_visit_business_day  = business day of visit #3
+*/
 customer_pair_visits AS (
   SELECT
     r.storeId,
@@ -110,11 +202,6 @@ customer_pair_visits AS (
     ) AS next_visit_business_day
 
   FROM ranked_visits r
-
-  JOIN first_visit_saturday_customers f
-    ON r.accountNumberId = f.accountNumberId
-   AND r.storeId = f.storeId
-
   JOIN visit_pairs vp
     ON r.visit_number IN (
       vp.start_visit_number,
@@ -128,7 +215,20 @@ customer_pair_visits AS (
     r.accountNumberId
 ),
 
-/* ================= FINAL RETURN RATE FOR WHOLE BRAND ================= */
+/* ================= FINAL RETURN RATE ================= */
+/*
+  Day filter logic:
+
+    EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+    IN UNNEST(p.target_days)
+
+  This means the day filter applies to the START visit only.
+
+  Example:
+    If target_days = [7], then visit #n must be Saturday.
+    The next visit #(n+1) can happen on any weekday, as long as it is
+    inside the same comparison period.
+*/
 final AS (
   SELECT
     CONCAT(
@@ -139,57 +239,108 @@ final AS (
 
     cpv.start_visit_number,
 
+    -- ========================================================
+    -- PERIOD 1 RETURN RATE
+    -- Example: Q1 2025
+    -- ========================================================
     ROUND(
       SAFE_DIVIDE(
+        -- Numerator:
+        -- start visit is inside period 1
+        -- start visit matches target day filter
+        -- next visit is also inside period 1
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
           AND cpv.next_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
         ),
+
+        -- Denominator:
+        -- start visit is inside period 1
+        -- start visit matches target day filter
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
         )
       ),
       4
     ) AS Return_Rate_Q1_2025,
 
+    -- ========================================================
+    -- PERIOD 2 RETURN RATE
+    -- Example: Q1 2026
+    -- ========================================================
     ROUND(
       SAFE_DIVIDE(
+        -- Numerator:
+        -- start visit is inside period 2
+        -- start visit matches target day filter
+        -- next visit is also inside period 2
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
           AND cpv.next_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
         ),
+
+        -- Denominator:
+        -- start visit is inside period 2
+        -- start visit matches target day filter
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
         )
       ),
       4
     ) AS Return_Rate_Q1_2026,
 
+    -- ========================================================
+    -- RETURN RATE CHANGE
+    -- Period 2 return rate minus Period 1 return rate
+    -- ========================================================
     ROUND(
       SAFE_DIVIDE(
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
           AND cpv.next_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
         ),
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
         )
       )
       -
       SAFE_DIVIDE(
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
           AND cpv.next_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
         ),
         COUNTIF(
           cpv.start_visit_business_day BETWEEN p.period_1_start AND p.period_1_end
+          AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+              IN UNNEST(p.target_days)
         )
       ),
       4
     ) AS Return_Rate_Change,
 
+    -- ========================================================
+    -- PERIOD 2 BASE CUSTOMER
+    -- This is the denominator for Q1 2026.
+    -- It counts customer-store start-visit opportunities.
+    -- ========================================================
     COUNTIF(
       cpv.start_visit_business_day BETWEEN p.period_2_start AND p.period_2_end
+      AND EXTRACT(DAYOFWEEK FROM cpv.start_visit_business_day)
+          IN UNNEST(p.target_days)
     ) AS `2026 Base Customer`
 
   FROM customer_pair_visits cpv
