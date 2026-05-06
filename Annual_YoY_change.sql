@@ -45,12 +45,12 @@
       - Non-Saturday columns
 
    IMPORTANT:
-   This query does NOT use the calendar table for final YoY totals.
+   The calendar table is used for final YoY totals as premilary results to provide GoldenChick without silent dropping edge cases of real data scenario (matched date logic between current and prior in real data in the fact table)
    The calendar table is used only for cohort qualification rules.
 
 ============================================================ */
 
---CREATE OR REPLACE TABLE `migration2220.B_Annual_YoY_Change` AS
+CREATE OR REPLACE TABLE `migration2220.B_Annual_YoY_Change_Calendar_DMA_Level_Metrics` AS
 
 WITH params AS (
   SELECT
@@ -417,66 +417,59 @@ fixed_cohort_count AS (
 ),
 
 /* ============================================================
-   10. ACTUAL DMA BUSINESS DATES
-
-   Gets actual transaction dates after fixed cohort is created.
-
-   This keeps the final YoY calculation based on BasedTransactions,
-   not calendar-only dates.
-============================================================ */
-actual_dma_business_dates AS (
-  SELECT DISTINCT
-    fc.dma_store_group_id,
-    fc.dma_name,
-    b.business_day,
-    b.business_weekday
-  FROM Based_data b
-  JOIN fixed_cohort fc
-    ON b.store_id = fc.store_id
-),
-
-/* ============================================================
-   11. SYMMETRIC YoY DATE PAIRS
-
-   This is the key reconciliation logic.
-
-   A current date is included only if its 364-day prior date also exists
-   for the same DMA fixed cohort.
-
-   This avoids:
-     - current/prior using different date lists
-     - same business day count but mismatched actual dates
+   10. Calendar-contract driven: fixed DMA store cohort, fixed annual/YTD date spine, 364-day weekday-aligned prior dates, then join transactions onto that spine.
+   The observed-activity matched-date logic is a reasonable sensitivity view, but we would not use it as the source-of-truth table because it lets the fact table decide the date denominator. If a prior-year date has no observed activity, that could mean true closure, zero demand, or data/mapping missingness. Those cases should be handled with explicit exclusion/flag reasons, not silently dropped through the join.
+   In brief, we would handle edge cases (matched-date logic with real data in fact table) in advance mode with exclusion/flag reasons.   
 ============================================================ */
 current_period_dates AS (
   SELECT DISTINCT
-    cur.dma_store_group_id,
-    cur.dma_name,
-    cur.business_day AS current_business_day,
-    DATE_SUB(cur.business_day, INTERVAL 364 DAY) AS prior_business_day,
-    EXTRACT(YEAR FROM cur.business_day) AS year,
+    fc.dma_store_group_id,
+    fc.dma_name,
+
+    cal.business_day AS current_business_day,
+    DATE_SUB(cal.business_day, INTERVAL 364 DAY) AS prior_business_day,
+
+    cal.business_year AS year,
+
     CASE
-      WHEN EXTRACT(YEAR FROM cur.business_day) BETWEEN 2023 AND 2025 THEN 'Full Year'
-      WHEN EXTRACT(YEAR FROM cur.business_day) = 2026 THEN 'YTD'
+      WHEN cal.business_year BETWEEN 2023 AND 2025 THEN 'Full Year'
+      WHEN cal.business_year = 2026 THEN 'YTD'
     END AS output_period_type,
+
     CASE
-      WHEN cur.business_weekday = 'Saturday' THEN 'Saturday'
+      WHEN cal.business_weekday = 'Saturday' THEN 'Saturday'
       ELSE 'Non-Saturday'
     END AS weekday_group
-  FROM actual_dma_business_dates cur
-  JOIN actual_dma_business_dates prior
-    ON cur.dma_store_group_id = prior.dma_store_group_id
-   AND DATE_SUB(cur.business_day, INTERVAL 364 DAY) = prior.business_day -- Current date is included only if its 364-day prior date also exists. 
+
+  FROM calendar cal
+
+  -- Use each DMA that has a fixed cohort.
+  -- This creates the same calendar anchor dates for each DMA.
+  JOIN (
+    SELECT DISTINCT
+      dma_store_group_id,
+      dma_name
+    FROM fixed_cohort
+  ) fc
+    ON TRUE
+
   CROSS JOIN params p
-  WHERE EXTRACT(YEAR FROM cur.business_day) BETWEEN 2023 AND 2026
+
+  WHERE cal.business_year BETWEEN 2023 AND 2026
+
+    -- Exclude 2026 storm Saturday from current anchor dates.
     AND NOT (
-      cur.business_weekday = 'Saturday'
-      AND cur.business_day IN UNNEST(p.excluded_saturdays)
+      cal.business_weekday = 'Saturday'
+      AND cal.business_day IN UNNEST(p.excluded_saturdays)
     )
+
+    -- Exclude 2026 storm Non-Saturdays from current anchor dates.
     AND NOT (
-      cur.business_weekday <> 'Saturday'
-      AND cur.business_day IN UNNEST(p.excluded_non_saturdays)
+      cal.business_weekday <> 'Saturday'
+      AND cal.business_day IN UNNEST(p.excluded_non_saturdays)
     )
 ),
+
 
 /* ============================================================
    12. CURRENT TOTALS
