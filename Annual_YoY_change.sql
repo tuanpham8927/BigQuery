@@ -83,14 +83,14 @@ WITH params AS (
 
     -- Input multiple DMA groups here.
     -- Empty ARRAY is take all stores of GoldenChick.
-    --ARRAY<STRING>[]AS target_store_groups,
-    ARRAY<STRING>[
-      'GCDMADallasFortWorth',
-      'GCDMAHouston',
-      'GCDMAAustin',
-      'GCDMAOklahomaCity',
-      'GCDMASanAntonio'
-    ] AS target_store_groups,
+    ARRAY<STRING>[] AS target_store_groups,
+    -- ARRAY<STRING>[
+    --   'GCDMADallasFortWorth',
+    --   'GCDMAHouston',
+    --   'GCDMAAustin',
+    --   'GCDMAOklahomaCity',
+    --   'GCDMASanAntonio'
+    -- ] AS target_store_groups,
         
 
     -- Storm Saturday exclusion.
@@ -176,25 +176,16 @@ store_day_txn AS (
 ============================================================ */
 store_list AS (
   SELECT DISTINCT
-    sg.storeGroupId AS dma_store_group_id,
-
-    -- Friendly DMA display name.
-    CASE
-      WHEN sg.storeGroupId = 'GCDMADallasFortWorth' THEN 'Dallas / Fort Worth'
-      WHEN sg.storeGroupId = 'GCDMAHouston' THEN 'Houston'
-      WHEN sg.storeGroupId = 'GCDMAAustin' THEN 'Austin'
-      WHEN sg.storeGroupId = 'GCDMAOklahomaCity' THEN 'Oklahoma City'
-      WHEN sg.storeGroupId = 'GCDMASanAntonio' THEN 'San Antonio'
-      ELSE sg.storeGroupId
-    END AS dma_name,
-
+    ssg.storeGroupId AS dma_store_group_id,
+    sg.name AS dma_name,
     sdt.store_id,
     sdt.store_name
   FROM store_day_txn sdt
-  LEFT JOIN `backfill_dataset.StoresToStoreGroups` sg
-    ON sdt.store_id = sg.storeId AND sg.storeGroupId like 'GCDMA%'
+  LEFT JOIN `backfill_dataset.StoresToStoreGroups` ssg
+    ON sdt.store_id = ssg.storeId --AND ssg.storeGroupId like 'GCDMA%'
+  JOIN `backfill_dataset.StoreGroups` sg ON ssg.storeGroupId = sg.storeGroupId
   CROSS JOIN params p
-  WHERE ARRAY_LENGTH(p.target_store_groups) = 0 OR sg.storeGroupId IN UNNEST(p.target_store_groups)
+  WHERE ARRAY_LENGTH(p.target_store_groups) = 0 OR ssg.storeGroupId IN UNNEST(p.target_store_groups)
 ),
 
 /* ============================================================
@@ -460,36 +451,27 @@ current_period_dates AS (
   SELECT DISTINCT
     cur.dma_store_group_id,
     cur.dma_name,
-
     cur.business_day AS current_business_day,
     DATE_SUB(cur.business_day, INTERVAL 364 DAY) AS prior_business_day,
-
     EXTRACT(YEAR FROM cur.business_day) AS year,
-
     CASE
       WHEN EXTRACT(YEAR FROM cur.business_day) BETWEEN 2023 AND 2025 THEN 'Full Year'
       WHEN EXTRACT(YEAR FROM cur.business_day) = 2026 THEN 'YTD'
     END AS output_period_type,
-
     CASE
       WHEN cur.business_weekday = 'Saturday' THEN 'Saturday'
       ELSE 'Non-Saturday'
     END AS weekday_group
-
   FROM actual_dma_business_dates cur
   JOIN actual_dma_business_dates prior
     ON cur.dma_store_group_id = prior.dma_store_group_id
-   AND DATE_SUB(cur.business_day, INTERVAL 364 DAY) = prior.business_day
-
+   AND DATE_SUB(cur.business_day, INTERVAL 364 DAY) = prior.business_day -- Current date is included only if its 364-day prior date also exists. 
   CROSS JOIN params p
-
   WHERE EXTRACT(YEAR FROM cur.business_day) BETWEEN 2023 AND 2026
-
     AND NOT (
       cur.business_weekday = 'Saturday'
       AND cur.business_day IN UNNEST(p.excluded_saturdays)
     )
-
     AND NOT (
       cur.business_weekday <> 'Saturday'
       AND cur.business_day IN UNNEST(p.excluded_non_saturdays)
@@ -505,14 +487,12 @@ current_totals AS (
     d.dma_name,
     d.year,
     d.output_period_type,
-    d.weekday_group,
-    
+    d.weekday_group,    
     COUNT(DISTINCT d.current_business_day) AS current_business_date_count,
     SUM(COALESCE(b.sale_in_dollar, 0)) AS current_sales,
     COUNT(DISTINCT b.accountNumberId) AS current_customers,
     COUNTIF(b.store_id IS NOT NULL AND COALESCE(b.sale_in_dollar, 0) > 0)
       AS current_transaction_count
-
   FROM current_period_dates d
   JOIN fixed_cohort fc
     ON d.dma_store_group_id = fc.dma_store_group_id
@@ -609,7 +589,7 @@ final_by_weekday AS (
     ON c.dma_store_group_id = fcc.dma_store_group_id
 )
 
---SELECT * FROM final_by_weekday
+SELECT * FROM final_by_weekday --where dma_store_group_id like 'GoldenChick%'
 
 /* ============================================================
    15. FINAL PIVOT OUTPUT
@@ -622,74 +602,74 @@ final_by_weekday AS (
 
    With Saturday and Non-Saturday side by side.
 ============================================================ */
-SELECT
-  dma_store_group_id,
-  dma_name,
-  year,
-  output_period_type,
-  fixed_dma_store_count,
+-- SELECT
+--   dma_store_group_id,
+--   dma_name,
+--   year,
+--   output_period_type,
+--   fixed_dma_store_count,
 
-  MAX(IF(weekday_group = 'Non-Saturday', current_business_date_count, NULL))
-    AS non_saturday_current_business_date_count,
+--   MAX(IF(weekday_group = 'Non-Saturday', current_business_date_count, NULL))
+--     AS non_saturday_current_business_date_count,
 
-  MAX(IF(weekday_group = 'Non-Saturday', current_sales, NULL))
-    AS non_saturday_current_sales,
+--   MAX(IF(weekday_group = 'Non-Saturday', current_sales, NULL))
+--     AS non_saturday_current_sales,
 
-  MAX(IF(weekday_group = 'Non-Saturday', prior_sales, NULL))
-    AS non_saturday_prior_sales,
+--   MAX(IF(weekday_group = 'Non-Saturday', prior_sales, NULL))
+--     AS non_saturday_prior_sales,
 
-  MAX(IF(weekday_group = 'Non-Saturday', current_transaction_count, NULL))
-    AS non_saturday_current_transaction_count,
+--   MAX(IF(weekday_group = 'Non-Saturday', current_transaction_count, NULL))
+--     AS non_saturday_current_transaction_count,
 
-  MAX(IF(weekday_group = 'Non-Saturday', prior_transaction_count, NULL))
-    AS non_saturday_prior_transaction_count,
+--   MAX(IF(weekday_group = 'Non-Saturday', prior_transaction_count, NULL))
+--     AS non_saturday_prior_transaction_count,
 
-  MAX(IF(weekday_group = 'Non-Saturday', sales_yoy_pct, NULL))
-    AS non_saturday_sales_yoy_pct,
+--   MAX(IF(weekday_group = 'Non-Saturday', sales_yoy_pct, NULL))
+--     AS non_saturday_sales_yoy_pct,
 
-  MAX(IF(weekday_group = 'Non-Saturday', transaction_yoy_pct, NULL))
-    AS non_saturday_transaction_yoy_pct,
+--   MAX(IF(weekday_group = 'Non-Saturday', transaction_yoy_pct, NULL))
+--     AS non_saturday_transaction_yoy_pct,
 
-  MAX(IF(weekday_group = 'Non-Saturday', average_check_yoy_pct, NULL))
-    AS non_saturday_average_check_yoy_pct,
+--   MAX(IF(weekday_group = 'Non-Saturday', average_check_yoy_pct, NULL))
+--     AS non_saturday_average_check_yoy_pct,
 
-  MAX(IF(weekday_group = 'Non-Saturday', customer_yoy_pct, NULL))
-    AS non_saturday_customer_yoy_pct,
+--   MAX(IF(weekday_group = 'Non-Saturday', customer_yoy_pct, NULL))
+--     AS non_saturday_customer_yoy_pct,
 
-  MAX(IF(weekday_group = 'Saturday', current_business_date_count, NULL))
-    AS saturday_current_business_date_count,
+--   MAX(IF(weekday_group = 'Saturday', current_business_date_count, NULL))
+--     AS saturday_current_business_date_count,
 
-  MAX(IF(weekday_group = 'Saturday', current_sales, NULL))
-    AS saturday_current_sales,
+--   MAX(IF(weekday_group = 'Saturday', current_sales, NULL))
+--     AS saturday_current_sales,
 
-  MAX(IF(weekday_group = 'Saturday', prior_sales, NULL))
-    AS saturday_prior_sales,
+--   MAX(IF(weekday_group = 'Saturday', prior_sales, NULL))
+--     AS saturday_prior_sales,
 
-  MAX(IF(weekday_group = 'Saturday', current_transaction_count, NULL))
-    AS saturday_current_transaction_count,
+--   MAX(IF(weekday_group = 'Saturday', current_transaction_count, NULL))
+--     AS saturday_current_transaction_count,
 
-  MAX(IF(weekday_group = 'Saturday', prior_transaction_count, NULL))
-    AS saturday_prior_transaction_count,
+--   MAX(IF(weekday_group = 'Saturday', prior_transaction_count, NULL))
+--     AS saturday_prior_transaction_count,
 
-  MAX(IF(weekday_group = 'Saturday', sales_yoy_pct, NULL))
-    AS saturday_sales_yoy_pct,
+--   MAX(IF(weekday_group = 'Saturday', sales_yoy_pct, NULL))
+--     AS saturday_sales_yoy_pct,
 
-  MAX(IF(weekday_group = 'Saturday', transaction_yoy_pct, NULL))
-    AS saturday_transaction_yoy_pct,
+--   MAX(IF(weekday_group = 'Saturday', transaction_yoy_pct, NULL))
+--     AS saturday_transaction_yoy_pct,
 
-  MAX(IF(weekday_group = 'Saturday', average_check_yoy_pct, NULL))
-    AS saturday_average_check_yoy_pct,
+--   MAX(IF(weekday_group = 'Saturday', average_check_yoy_pct, NULL))
+--     AS saturday_average_check_yoy_pct,
 
-  MAX(IF(weekday_group = 'Saturday', customer_yoy_pct, NULL))
-    AS saturday_customer_yoy_pct
+--   MAX(IF(weekday_group = 'Saturday', customer_yoy_pct, NULL))
+--     AS saturday_customer_yoy_pct
 
-FROM final_by_weekday
-GROUP BY
-  dma_store_group_id,
-  dma_name,
-  year,
-  output_period_type,
-  fixed_dma_store_count
-ORDER BY
-  dma_name,
-  year;
+-- FROM final_by_weekday
+-- GROUP BY
+--   dma_store_group_id,
+--   dma_name,
+--   year,
+--   output_period_type,
+--   fixed_dma_store_count
+-- ORDER BY
+--   dma_name,
+--   year;
