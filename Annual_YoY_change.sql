@@ -50,6 +50,7 @@
 
 ============================================================ */
 
+--CREATE OR REPLACE TABLE `migration2220.B_Annual_YoY_Change` AS
 
 WITH params AS (
   SELECT
@@ -81,6 +82,8 @@ WITH params AS (
     0.75 AS min_non_saturday_coverage_pct,
 
     -- Input multiple DMA groups here.
+    -- Empty ARRAY is take all stores of GoldenChick.
+    --ARRAY<STRING>[]AS target_store_groups,
     ARRAY<STRING>[
       'GCDMADallasFortWorth',
       'GCDMAHouston',
@@ -88,6 +91,7 @@ WITH params AS (
       'GCDMAOklahomaCity',
       'GCDMASanAntonio'
     ] AS target_store_groups,
+        
 
     -- Storm Saturday exclusion.
     ARRAY<DATE>[DATE '2026-01-24'] AS excluded_saturdays,
@@ -142,7 +146,8 @@ Based_data AS (
     AND b.storeId IS NOT NULL
     AND b.business_day IS NOT NULL
     AND COALESCE(b.sale_in_dollar, 0) > 0
-),
+)
+,
 
 /* ============================================================
    3. STORE-DAY TRANSACTION COUNT
@@ -186,10 +191,10 @@ store_list AS (
     sdt.store_id,
     sdt.store_name
   FROM store_day_txn sdt
-  JOIN `backfill_dataset.StoresToStoreGroups` sg
-    ON sdt.store_id = sg.storeId
+  LEFT JOIN `backfill_dataset.StoresToStoreGroups` sg
+    ON sdt.store_id = sg.storeId AND sg.storeGroupId like 'GCDMA%'
   CROSS JOIN params p
-  WHERE sg.storeGroupId IN UNNEST(p.target_store_groups)
+  WHERE ARRAY_LENGTH(p.target_store_groups) = 0 OR sg.storeGroupId IN UNNEST(p.target_store_groups)
 ),
 
 /* ============================================================
@@ -229,7 +234,8 @@ maturity_audit AS (
   LEFT JOIN ranked_store_txn r
     ON s.store_id = r.store_id
   GROUP BY s.dma_store_group_id, s.store_id, p.maturity_cutoff_date
-),
+)
+,
 
 /* ============================================================
    6. MONTHLY CONTINUITY RULE
@@ -414,7 +420,7 @@ fixed_cohort AS (
 fixed_cohort_count AS (
   SELECT
     dma_store_group_id,
-    COUNT(DISTINCT store_id) AS fixed_dma_store_count
+    COUNT(DISTINCT store_id) AS fixed_dma_store_count, STRING_AGG(DISTINCT store_name,', ' ORDER BY store_name) AS fixed_cohort_store_names
   FROM fixed_cohort
   GROUP BY dma_store_group_id
 ),
@@ -439,7 +445,7 @@ actual_dma_business_dates AS (
 ),
 
 /* ============================================================
-   11. SYMMETRIC YOY DATE PAIRS
+   11. SYMMETRIC YoY DATE PAIRS
 
    This is the key reconciliation logic.
 
@@ -500,7 +506,7 @@ current_totals AS (
     d.year,
     d.output_period_type,
     d.weekday_group,
-
+    
     COUNT(DISTINCT d.current_business_day) AS current_business_date_count,
     SUM(COALESCE(b.sale_in_dollar, 0)) AS current_sales,
     COUNT(DISTINCT b.accountNumberId) AS current_customers,
@@ -555,6 +561,7 @@ final_by_weekday AS (
     c.year,
     c.output_period_type,
     fcc.fixed_dma_store_count,
+    fcc.fixed_cohort_store_names,
     c.weekday_group,
 
     c.current_business_date_count,
@@ -565,6 +572,9 @@ final_by_weekday AS (
 
     c.current_transaction_count,
     p.prior_transaction_count,
+
+    c.current_customers,
+    p.prior_customers,
 
     ROUND(SAFE_DIVIDE(c.current_sales, c.current_transaction_count), 2)
       AS current_average_check,
@@ -598,6 +608,8 @@ final_by_weekday AS (
   JOIN fixed_cohort_count fcc
     ON c.dma_store_group_id = fcc.dma_store_group_id
 )
+
+--SELECT * FROM final_by_weekday
 
 /* ============================================================
    15. FINAL PIVOT OUTPUT
