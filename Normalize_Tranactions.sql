@@ -8,7 +8,7 @@ Output:
 -- Full daypart and business date information, day part may be null due to Store Daypart Configuration misconfiguration.
 -- A new Transaction_composite_key from primary keys siteIdFrontend,timestamp,accountNumberId,type,amount in table AuthorizationsClientLine
 -- A new Check_composite_id from siteIdFrontend,timestamp,accountNumberId,check,amount in table table AuthorizationsClientLine
--- A check_composite_id may has duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check.   
+-- A new Check_number may has duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check number.   
 ========================================================
 */
 CREATE OR REPLACE TABLE `migration2220.NormalizedTransactions_StoreTimeZone`
@@ -102,7 +102,7 @@ WITH
             COALESCE(CAST(amount AS STRING), 'NULL'),
             COALESCE(CAST(siteIdFrontEnd AS STRING), 'NULL'),
             COALESCE(FORMAT_TIMESTAMP('%F %T%E6S', timestamp, 'UTC'), 'NULL'))))
-        AS check_composite_id,
+        AS check_number,
       c.check,
       c.type AS transaction_type,
       m.reportGroup,
@@ -156,7 +156,7 @@ final_tx AS (
     b.timestamp,
     b.timeZone,
     b.local_time,
-    b.check_composite_id,
+    b.check_number,
     b.check,
     b.sale_in_dollar,
     d.duration_minute_total,
