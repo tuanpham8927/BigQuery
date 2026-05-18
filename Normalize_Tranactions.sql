@@ -6,9 +6,8 @@ Output:
 -- Filter Golden Chick Stores
 -- Essential AuthorizationsClientLine fields
 -- Full daypart and business date information, day part may be null due to Store Daypart Configuration misconfiguration.
--- A new Transaction_composite_key from primary keys siteIdFrontend,timestamp,accountNumberId,type,amount in table AuthorizationsClientLine
--- A new Check_composite_id from siteIdFrontend,timestamp,accountNumberId,check,amount in table table AuthorizationsClientLine
--- A new Check_number may has duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check number.   
+-- Create a new Transaction_composite_key from primary keys siteIdFrontend,timestamp,accountNumberId,type,amount in table AuthorizationsClientLine
+-- Create a new Check_hash from siteIdFrontend,timestamp,accountNumberId,check,amount in table table AuthorizationsClientLine. The new Check_hash may be duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check number.   
 ========================================================
 */
 CREATE OR REPLACE TABLE `migration2220.NormalizedTransactions_StoreTimeZone`
@@ -102,7 +101,7 @@ WITH
             COALESCE(CAST(amount AS STRING), 'NULL'),
             COALESCE(CAST(siteIdFrontEnd AS STRING), 'NULL'),
             COALESCE(FORMAT_TIMESTAMP('%F %T%E6S', timestamp, 'UTC'), 'NULL'))))
-        AS check_number,
+        AS check_hash,
       c.check,
       c.type AS transaction_type,
       m.reportGroup,
@@ -156,7 +155,7 @@ final_tx AS (
     b.timestamp,
     b.timeZone,
     b.local_time,
-    b.check_number,
+    b.check_hash,
     b.check,
     b.sale_in_dollar,
     d.duration_minute_total,
