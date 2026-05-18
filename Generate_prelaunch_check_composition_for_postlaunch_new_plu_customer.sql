@@ -54,7 +54,7 @@ CREATE TEMP TABLE params
 AS
 SELECT
   DATE '2026-04-28' AS begin_date,
-  DATE '2026-05-10' AS end_date,
+  DATE '2026-04-28' AS end_date,
   '2033' AS new_plu_ids,
   ['2MWAXy3FzKTvmSgn'] AS test_store_id,
   DATE '2026-01-01' AS Lookback_begin_date,
