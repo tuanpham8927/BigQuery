@@ -7,7 +7,7 @@ Output:
 -- Essential AuthorizationsClientLine fields
 -- Full daypart and business date information, day part may be null due to Store Daypart Configuration misconfiguration.
 -- Create a new Transaction_composite_key from primary keys siteIdFrontend,timestamp,accountNumberId,type,amount in table AuthorizationsClientLine
--- Create a new Check_hash from siteIdFrontend,timestamp,accountNumberId,check,amount in table table AuthorizationsClientLine. The new Check_hash may be duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check number.   
+-- Create a new Check_hash from siteIdFrontend,timestamp,accountNumberId,check,amount in table table AuthorizationsClientLine. The new Check_hash may be duplication due to multiple (two) transaction types 'Pre Auth Request', 'Pre Auth Complete' in the same check number.
 ========================================================
 */
 CREATE OR REPLACE TABLE `migration2220.NormalizedTransactions_StoreTimeZone`
@@ -93,15 +93,19 @@ WITH
       c.terminalId,
       c.authCode,
       c.siteIdFrontend,
-      TO_HEX(
-        SHA256(
-          CONCAT(
-            COALESCE(CAST(accountNumberId AS STRING), 'NULL'),
-            COALESCE(TO_JSON_STRING(check), 'NULL'),
-            COALESCE(CAST(amount AS STRING), 'NULL'),
-            COALESCE(CAST(siteIdFrontEnd AS STRING), 'NULL'),
-            COALESCE(FORMAT_TIMESTAMP('%F %T%E6S', timestamp, 'UTC'), 'NULL'))))
-        AS check_hash,
+      CASE
+        WHEN check IS NULL THEN NULL
+        ELSE
+          TO_HEX(
+            SHA256(
+              CONCAT(
+                COALESCE(CAST(accountNumberId AS STRING), 'NULL'),
+                TO_JSON_STRING(check),
+                COALESCE(CAST(amount AS STRING), 'NULL'),
+                COALESCE(CAST(siteIdFrontEnd AS STRING), 'NULL'),
+                COALESCE(
+                  FORMAT_TIMESTAMP('%F %T%E6S', timestamp, 'UTC'), 'NULL'))))
+        END AS check_hash,
       c.check,
       c.type AS transaction_type,
       m.reportGroup,
