@@ -11,6 +11,11 @@ Output:
 ========================================================
 */
 CREATE OR REPLACE TABLE `migration2220.NormalizedTransactions_StoreTimeZone`
+PARTITION BY business_date
+CLUSTER BY storeId, accountnumberid, channel_group, customer_type
+OPTIONS (
+  require_partition_filter = TRUE
+)
 AS
 
 /* ---------------------------------------------
@@ -131,6 +136,7 @@ WITH
     JOIN `backfill_dataset.Stores` s
       ON
         m.storeId = s.storeId
+    WHERE timestamp > '2024-06-01'
   )
 -- Select count(*) from   base_tx
 ,
