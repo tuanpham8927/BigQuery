@@ -13,9 +13,9 @@ Output:
 CREATE OR REPLACE TABLE `migration2220.NormalizedTransactions_StoreTimeZone`
 PARTITION BY business_date
 CLUSTER BY storeId, accountnumberid, channel_group, customer_type
-OPTIONS (
-  require_partition_filter = TRUE
-)
+-- OPTIONS (
+--   require_partition_filter = TRUE
+-- )
 AS
 
 /* ---------------------------------------------
